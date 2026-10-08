@@ -273,7 +273,7 @@ button:hover{
 
 <div id="lobby">
     <h1>TANK FORTRESS</h1>
-    <h2>SANDSTORM DOMINION &mdash; MULTIPLAYER 5v5</h2>
+    <h2>SANDSTORM DOMINION &mdash; MULTIPLAYER (UP TO 5v5)</h2>
     <div id="lobbyJoin">
         <input id="nameInput" maxlength="14" placeholder="Callsign">
         <input id="roomInput" maxlength="20" placeholder="Room (optional)">
@@ -284,14 +284,8 @@ button:hover{
         <h3>PLAYERS</h3>
         <div id="lobbyList"></div>
         <div id="hostControls" style="display:none">
-            <h3>ENEMY AI DIFFICULTY</h3>
-            <div class="diffRow">
-                <button class="diffBtn" data-diff="EASY">EASY</button>
-                <button class="diffBtn active" data-diff="NORMAL">NORMAL</button>
-                <button class="diffBtn" data-diff="HARD">HARD</button>
-            </div>
             <button id="startBtn">START MATCH</button>
-            <p class="lobbyHint">Players alternate between green and red. Empty slots are filled with AI tanks.</p>
+            <p class="lobbyHint">Players alternate between green and red. Only real players are in the match &mdash; no AI tanks.</p>
         </div>
         <div id="guestWait" style="display:none"><p class="lobbyHint">Waiting for the host to start the match...</p></div>
     </div>
@@ -2014,7 +2008,7 @@ function explodeWalls(x,y,radius){
 
 let gameEnded = false;
 function buildScoreboard(){
-    const sorted = [...allTanks].sort((a, b) => b.score - a.score);
+    const sorted = allTanks.filter(t => !t.inactive).sort((a, b) => b.score - a.score);
     let rows = "";
     for (const t of sorted) {
         const teamLabel = t.team === "p1" ? "SQUAD" : "ENEMY";
@@ -2157,8 +2151,8 @@ function update(){
 
     if (Date.now() - lastPingTime > 15000) {
         lastPingTime = Date.now();
-        const cm = allTanks[player1.team === "p1" ? 1 : 0];
-        pingPos = { x: cm.x, y: cm.y };
+        const cm = pingTarget();
+        pingPos = cm ? { x: cm.x, y: cm.y } : null;
         pingAlpha = 1.0;
     }
     if (pingAlpha > 0) {
@@ -2166,7 +2160,7 @@ function update(){
     }
 
     allTanks.forEach(t => {
-        if (t.dead) {
+        if (t.dead && !t.inactive) {
             t.respawnTimer--;
             if (t.respawnTimer <= 0) {
                 respawnPlayer(t, t.spawnX, t.spawnY, t.spawnAngle);
@@ -2181,8 +2175,7 @@ function update(){
             runHumanControls(t, t === player1 ? keys : t.inKeys);
             movePlayer(t, t.team === "p1" ? "left" : "right");
         } else {
-            updateAITank(t);
-            movePlayer(t, t.team === "p1" ? "left" : "right");
+            // no AI: empty slots stay out of the game
         }
         if (t === player1 && t.reload === 1 && !t.dead) sfxReloadReady(0.6);
         t.reload--;
@@ -3362,13 +3355,20 @@ function hostOrGuestPlayers(m){
 // ---------- HOST ----------
 function humanize(slot, id, name){
     const t = allTanks[slot];
-    t.human = true; t.isAI = false; t.netId = id; t.callsign = name; t.inKeys = {};
+    t.human = true; t.isAI = false; t.inactive = false; t.dead = false; t.hp = 100; t.netId = id; t.callsign = name; t.inKeys = {};
     t.tank = tankTypes.HE;
     return t;
 }
 function pickSlot(team){
     for (const s of SLOTS[team]) if (!allTanks[s].human) return s;
     return -1;
+}
+function deactivate(t){
+    t.human = false; t.isAI = true; t.inactive = true; t.netId = null; t.inKeys = {};
+    t.callsign = t.defCallsign; t.dead = true; t.hp = 0; t.respawnTimer = 0; t.currentSpeed = 0;
+}
+function pingTarget(){
+    return allTanks.find(t => t.team !== player1.team && !t.dead && !t.inactive) || null;
 }
 function hostStartMatch(){
     if (NET.matchBegun) return;
@@ -3380,6 +3380,7 @@ function hostStartMatch(){
         if (slot < 0) return;
         humanize(slot, p.id, p.name);
     });
+    allTanks.forEach(t => { if (!t.human) deactivate(t); });
     const me = allTanks.find(t => t.netId === NET.myId);
     player1 = me;
     NET.lastWallSig = NET.lastNamesSig = null;
@@ -3414,7 +3415,7 @@ function hostPlayerLeft(id){
     NET.picked.delete(id);
     const t = allTanks.find(q => q.netId === id);
     if (!t) return;
-    t.human = false; t.isAI = true; t.netId = null; t.inKeys = {}; t.callsign = t.defCallsign;
+    deactivate(t);
     NET.lastNamesSig = null;
     if (inMenu && NET.matchBegun) hostCheckPicks();
 }
@@ -3425,8 +3426,6 @@ function hostCheckPicks(){
 function hostBeginSim(){
     if (!NET.matchBegun || !inMenu) return;
     clearTimeout(NET.simTimer);
-    const arr = Object.keys(tankTypes);
-    allTanks.forEach(t => { if (!t.human) t.tank = tankTypes[arr[Math.floor(Math.random() * arr.length)]]; });
     NET.lastWallSig = NET.lastNamesSig = null;
     toGuests({ t: "go" });
     $("startText").textContent = "SQUAD DEPLOYING... GET READY!";
@@ -3446,7 +3445,7 @@ function hostBuildSnapshot(){
     const T = allTanks.map(t => [
         r1(t.x), r1(t.y), r3(t.angle), r3(t.turretAngle), Math.round(t.hp),
         (t.immobilized ? 1 : 0) | (t.gunBroken ? 2 : 0) | (t.opticsBroken ? 4 : 0) | (t.turretMotorBroken ? 8 : 0) |
-        (t.loaderBroken ? 16 : 0) | (t.commanderBroken ? 32 : 0) | (t.dead ? 64 : 0),
+        (t.loaderBroken ? 16 : 0) | (t.commanderBroken ? 32 : 0) | (t.dead ? 64 : 0) | (t.inactive ? 128 : 0),
         tankKeyByObj.get(t.tank), Math.max(0, Math.round(t.reload)), r2(t.currentSpeed), Math.max(0, Math.round(t.respawnTimer)),
         Math.round(t.repairProgress), r1(t.recoilOffset), r1(t.trackOffset), Math.round(t.score),
         t.kills, t.deaths, t.assists, t.captures, Math.max(0, Math.round(t.buildCooldown))
@@ -3514,7 +3513,7 @@ function guestApplySnapshot(d){
         if (first || Math.hypot(t.nx - t.x, t.ny - t.y) > 300) { t.x = t.nx; t.y = t.ny; t.angle = t.na; t.turretAngle = t.nta; }
         t.hp = a[4]; const f = a[5];
         t.immobilized = !!(f & 1); t.gunBroken = !!(f & 2); t.opticsBroken = !!(f & 4);
-        t.turretMotorBroken = !!(f & 8); t.loaderBroken = !!(f & 16); t.commanderBroken = !!(f & 32); t.dead = !!(f & 64);
+        t.turretMotorBroken = !!(f & 8); t.loaderBroken = !!(f & 16); t.commanderBroken = !!(f & 32); t.dead = !!(f & 64); t.inactive = !!(f & 128);
         t.tank = tankTypes[a[6]] || t.tank; t.reload = a[7]; t.currentSpeed = a[8]; t.respawnTimer = a[9];
         t.repairProgress = a[10]; t.recoilOffset = a[11]; t.trackOffset = a[12];
         t.score = a[13]; t.kills = a[14]; t.deaths = a[15]; t.assists = a[16]; t.captures = a[17]; t.buildCooldown = a[18];
@@ -3559,8 +3558,8 @@ function clientUpdate(){
     }
     if (Date.now() - lastPingTime > 15000) {
         lastPingTime = Date.now();
-        const cm = allTanks[player1.team === "p1" ? 1 : 0];
-        pingPos = { x: cm.x, y: cm.y }; pingAlpha = 1.0;
+        const cm = pingTarget();
+        pingPos = cm ? { x: cm.x, y: cm.y } : null; pingAlpha = 1.0;
     }
     if (pingAlpha > 0) pingAlpha -= 0.008;
     updateRespawnSelectUI();
