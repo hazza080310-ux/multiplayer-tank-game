@@ -1,0 +1,13 @@
+{
+  "name": "tankfort-multiplayer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tank Fortress - Sandstorm Dominion, multiplayer relay server",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
